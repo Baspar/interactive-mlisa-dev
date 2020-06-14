@@ -506,11 +506,14 @@ use std::sync::mpsc::channel;
 // }
 //
 
+type Pod = kubectl::Pod<kubectl::PodLabels>;
+type Pods = Vec<Pod>;
+
 struct State {
-    pods: Option<Vec<kubectl::Pod<kubectl::PodLabels>>>,
+    pods: Option<Pods>,
     index_highlighted: usize,
     error: Option<anyhow::Error>,
-    update_id: u8,
+    update_id: u64,
 }
 
 impl State {
@@ -544,14 +547,14 @@ impl State {
                             spec: item.spec.clone(),
                             metadata: kubectl::MetaData {
                                 labels: labels.clone(),
-                                name:  item.metadata.name.clone()
+                                name: item.metadata.name.clone()
                             }
                         })
                     },
                     kubectl::Labels::OtherLabels {} => None
                 }
             })
-        .collect();
+            .collect();
         self.pods = Some(pods);
         self.update_id += 1;
         Ok(())
@@ -559,20 +562,50 @@ impl State {
 
     pub fn render(self: &mut Self, stdout: &mut termion::raw::RawTerminal<std::io::Stdout>) {
         let mut stdout = stdout.lock();
+        write!(stdout, "{}", clear::All).unwrap();
         write!(stdout, "{}", cursor::Goto(1, 0)).unwrap();
         write!(stdout, "Update #{:?}", self.update_id).unwrap();
         if let Some(err) = &self.error {
             write!(stdout, "Error: {:?}", err).unwrap();
         }
+
         if let Some(pods) = &self.pods {
+            let columns: Vec<Box<dyn Fn(&Pod) -> Option<String>>> = vec![
+                Box::new(|pod| Some(pod.metadata.name.clone())),
+                Box::new(|pod| Some(pod.status.phase.clone())),
+                Box::new(|pod| pod.metadata.labels.patched.clone()),
+            ];
+
+            for index in 0..pods.len() {
+                    write!(stdout, "{}", cursor::Goto(1, (index + 2) as u16)).unwrap();
+                    write!(stdout, "{} ", if index == self.index_highlighted { ">" } else { " " }).unwrap();
+            }
+
+            let columns_x: Vec<u16> = columns
+                .iter()
+                .map(|column_fn| pods
+                    .iter()
+                    .map(|pod| column_fn(pod)
+                        .unwrap_or_else(|| "".to_string())
+                        .len() as u16
+                    )
+                    .max()
+                    .unwrap()
+                )
+                .collect();
+
             for (index, pod) in pods.iter().enumerate() {
-                let name = &pod.metadata.name;
-                let status = &pod.status.phase;
-                write!(stdout, "{}", cursor::Goto(1, (index + 2) as u16)).unwrap();
-                write!(stdout, "{} ", if index == self.index_highlighted { ">" } else { " " }).unwrap();
-                write!(stdout, "{} | {}", name, status).unwrap();
-                if let Some(patched) = &pod.metadata.labels.patched {
-                    write!(stdout, " | PATCHED {}", patched).unwrap();
+                let mut x = 3;
+                for (col_index, column_fn) in columns.iter().enumerate() {
+                    if let Some(value) = column_fn(pod) {
+                        write!(stdout, "{}{}",
+                            cursor::Goto(
+                                x,
+                                (index + 2) as u16
+                            ),
+                            value).unwrap();
+                    }
+                    x += columns_x[col_index] + 3;
                 }
             }
         } else {
@@ -649,7 +682,6 @@ fn main() -> Result<()> {
     });
 
     let mut stdout = io::stdout().into_raw_mode()?;
-    write!(stdout, "{}", clear::All).unwrap();
     for event in receiver {
         match event {
             Event::Quit => {break},
