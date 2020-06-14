@@ -9,14 +9,15 @@ use termion::input::TermRead;
 use termion::event::Key;
 
 // use std::env;
-use std::io::{self, Write};
+use std::io::{self,Stdout,Write};
 use std::process;
 
 mod kubectl;
 
 use anyhow::Result;
 
-use std::sync::{RwLock,Arc};
+use std::sync::{RwLock,Arc,Mutex};
+use std::sync::mpsc::channel;
 
 // use extra::rand::Randomizer;
 
@@ -45,11 +46,12 @@ use std::sync::{RwLock,Arc};
 // const CONCEALED: &str = "▒";
 //
 // /// The game over screen.
-// const GAME_OVER: &str = "╔═════════════════╗\n\r\
-//                                  ║───┬Game over────║\n\r\
-//                                  ║ r ┆ replay      ║\n\r\
-//                                  ║ q ┆ quit        ║\n\r\
-//                                  ╚═══╧═════════════╝";
+// const GAME_OVER: &str = "
+// ╔═════════════════╗\n\r\
+// ║───┬Game over────║\n\r\
+// ║ r ┆ replay      ║\n\r\
+// ║ q ┆ quit        ║\n\r\
+// ╚═══╧═════════════╝";
 //
 // /// The upper and lower boundary char.
 // const HORZ_BOUNDARY: &str = "─";
@@ -504,81 +506,65 @@ use std::sync::{RwLock,Arc};
 // }
 //
 
-struct App<W: Write> {
-    pods: Arc<RwLock<Option<Vec<kubectl::Pod<kubectl::PodLabels>>>>>,
+struct State {
+    pods: Option<Vec<kubectl::Pod<kubectl::PodLabels>>>,
     index_highlighted: usize,
-    // loading: bool,
-    w: Arc<RwLock<W>>,
+    error: Option<anyhow::Error>,
+    update_id: u8,
 }
 
-impl<W: Write> App<W> {
-    /// Constructor
-    pub fn new(w: W) -> Self {
+impl State {
+    pub fn new () -> Self {
         Self {
             index_highlighted: 0,
-            pods: Arc::new(RwLock::new(None)),
-            // loading: false,
-            w: Arc::new(RwLock::new(w)),
+            pods: None,
+            error: None,
+            update_id: 0,
         }
     }
 
-    fn get_pods(self: &mut Self) -> Result<()> {
-        let output = process::Command::new("kubectl")
+    pub fn get_pods(self: &mut Self) -> Result<()> {
+        let res = process::Command::new("kubectl")
             .env("KUBECONFIG", "/Users/baspar/.kube/config-multipass")
             .arg("get").arg("pods")
             .arg("-n").arg("mlisa-core")
             .arg("-o").arg("json")
-            .output();
+            .output()?;
 
-        match output {
-            Ok(res) => {
-                let res = res.stdout.as_slice();
-                let res = std::str::from_utf8(res)?;
-                let res: kubectl::Response<kubectl::Labels> = serde_json::from_str(res)?;
-                let pods = res.items
-                    .iter()
-                    .filter_map(|item| {
-                        match &item.metadata.labels {
-                            kubectl::Labels::PodLabels (labels)  => {
-                                Some(kubectl::Pod {
-                                    status: item.status.clone(),
-                                    spec: item.spec.clone(),
-                                    metadata: kubectl::MetaData {
-                                        labels: labels.clone(),
-                                        name:  item.metadata.name.clone()
-                                    }
-                                })
-                            },
-                            kubectl::Labels::OtherLabels {} => None
-                        }
-                    })
-                .collect();
-                *self.pods.write().unwrap() = Some(pods);
-            },
-            Err(err) => panic!("{}", err)
-        };
+        let res = res.stdout.as_slice();
+        let res = std::str::from_utf8(res)?;
+        let res: kubectl::Response<kubectl::Labels> = serde_json::from_str(res)?;
+        let pods = res.items
+            .iter()
+            .filter_map(|item| {
+                match &item.metadata.labels {
+                    kubectl::Labels::PodLabels (labels)  => {
+                        Some(kubectl::Pod {
+                            status: item.status.clone(),
+                            spec: item.spec.clone(),
+                            metadata: kubectl::MetaData {
+                                labels: labels.clone(),
+                                name:  item.metadata.name.clone()
+                            }
+                        })
+                    },
+                    kubectl::Labels::OtherLabels {} => None
+                }
+            })
+        .collect();
+        self.pods = Some(pods);
+        self.update_id += 1;
         Ok(())
     }
 
-    // pub fn start_update_loop(self: &mut Self) {
-    //     std::thread::spawn(move || {
-    //         loop {
-    //             std::thread::sleep(std::time::Duration::from_secs(100));
-    //             self.get_pods();
-    //         };
-    //     });
-    // }
-
-    pub fn render(self: &mut Self) {
-        let mut stdout = self.w.write().unwrap();
-        if let Some(pods) = &*self.pods.read().unwrap() {
-            // println!("{:?}", self.pods);
+    pub fn render(self: &mut Self, stdout: &mut termion::raw::RawTerminal<std::io::Stdout>) {
+        let mut stdout = stdout.lock();
+        if let Some(pods) = &self.pods {
             write!(stdout, "{}", clear::All).unwrap();
-            // let widths = vec![];
             for (index, pod) in pods.iter().enumerate() {
                 let name = &pod.metadata.name;
                 let status = &pod.status.phase;
-                write!(stdout, "{}", cursor::Goto(1, (index + 1) as u16)).unwrap();
+                write!(stdout, "{}", cursor::Goto(1, (index + 2) as u16)).unwrap();
                 write!(stdout, "{} ", if index == self.index_highlighted { ">" } else { " " }).unwrap();
                 write!(stdout, "{} | {}", name, status).unwrap();
                 if let Some(patched) = &pod.metadata.labels.patched {
@@ -588,53 +574,92 @@ impl<W: Write> App<W> {
         } else {
             write!(stdout, "Nothing").unwrap();
         }
+        write!(stdout, "{}", cursor::Goto(1, 0)).unwrap();
+        if let Some(err) = &self.error {
+            write!(stdout, "Error: {:?}", err).unwrap();
+        } else {
+            write!(stdout, "Update #{:?}", self.update_id).unwrap();
+        }
         stdout.flush().unwrap();
     }
+}
 
-    pub fn cursor_up(self: &mut Self) {
-        if self.index_highlighted > 0 {
-            self.index_highlighted -= 1;
+enum Event {
+    Render,
+    Quit
+}
+
+fn handle_input(state: Arc<Mutex<State>>, send: std::sync::mpsc::Sender<Event>) -> Result<()> {
+    let stdin = io::stdin();
+    let stdin = stdin.lock();
+    let mut keys = stdin.keys();
+    loop {
+        match keys.next().unwrap().unwrap() {
+            Key::Down | Key::Char('j') => {
+                let mut state = state.lock().unwrap();
+                if let Some(pods) = &state.pods {
+                    state.index_highlighted = (pods.len() - 1).min(state.index_highlighted + 1);
+                }
+                send.send(Event::Render)?;
+            },
+            Key::Up | Key::Char('k') => {
+                let mut state = state.lock().unwrap();
+                if state.index_highlighted > 0 {
+                    state.index_highlighted -= 1;
+                }
+                send.send(Event::Render)?;
+            },
+            Key::Char('q') => {
+                send.send(Event::Quit)?;
+                break
+            },
+            _ => {},
         }
     }
+    Ok(())
+}
 
-    pub fn cursor_down(self: &mut Self) {
-        if let Some(pods) = &*self.pods.read().unwrap() {
-            self.index_highlighted = (pods.len() - 1).min(self.index_highlighted + 1);
+fn handle_pull(state: Arc<Mutex<State>>, send: std::sync::mpsc::Sender<Event>) -> Result<()> {
+    loop {
+        if let Ok(mut state) = state.lock() {
+            if let Err(error) = state.get_pods() {
+                state.error = Some(error);
+            }
+            send.send(Event::Render)?;
         }
+        std::thread::sleep(std::time::Duration::from_millis(800));
     }
+    Ok(())
 }
 
 fn main() -> Result<()> {
     // Get and lock the stdios.
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    // let stderr = io::stderr();
 
-    let stdin = stdin.lock();
-    let stdout = stdout.lock();
-    // let stderr = stderr.lock();
+    let (sender, receiver) = channel();
 
-    // We go to raw mode to make the control over the terminal more fine-grained.
-    let stdout = stdout.into_raw_mode().unwrap();
-    let mut keys = stdin.keys();
+    let state = Arc::new(Mutex::new(State::new()));
 
-    let mut app = App::new(stdout);
-    // app.start_update_loop();
-    app.get_pods().unwrap();
-    loop {
-        // Repeatedly read a single byte.
-        app.render();
-        match keys.next().unwrap().unwrap() {
-            Key::Down | Key::Char('j') => app.cursor_down(),
-            Key::Up | Key::Char('k') => app.cursor_up(),
-            Key::Char('q') => break,
-            _ => {},
+    let s = state.clone();
+    let send = sender.clone();
+    std::thread::spawn(move || {
+        handle_input(s, send).unwrap();
+    });
+
+    let s = state.clone();
+    std::thread::spawn(move || {
+        handle_pull(s, sender).unwrap();
+    });
+
+    let mut stdout = io::stdout().into_raw_mode()?;
+    for event in receiver {
+        match event {
+            Event::Quit => {break},
+            Event::Render => {
+                state.lock().unwrap().render(&mut stdout);
+            }
         }
     }
 
-    // let termsize = termion::terminal_size().ok();
-    // let termwidth = termsize.map(|(w,_)| w - 2);
-    // let termheight = termsize.map(|(_,h)| h - 2);
     Ok(())
 }
 
