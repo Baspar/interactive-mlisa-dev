@@ -559,8 +559,12 @@ impl State {
 
     pub fn render(self: &mut Self, stdout: &mut termion::raw::RawTerminal<std::io::Stdout>) {
         let mut stdout = stdout.lock();
+        write!(stdout, "{}", cursor::Goto(1, 0)).unwrap();
+        write!(stdout, "Update #{:?}", self.update_id).unwrap();
+        if let Some(err) = &self.error {
+            write!(stdout, "Error: {:?}", err).unwrap();
+        }
         if let Some(pods) = &self.pods {
-            write!(stdout, "{}", clear::All).unwrap();
             for (index, pod) in pods.iter().enumerate() {
                 let name = &pod.metadata.name;
                 let status = &pod.status.phase;
@@ -573,12 +577,6 @@ impl State {
             }
         } else {
             write!(stdout, "Nothing").unwrap();
-        }
-        write!(stdout, "{}", cursor::Goto(1, 0)).unwrap();
-        if let Some(err) = &self.error {
-            write!(stdout, "Error: {:?}", err).unwrap();
-        } else {
-            write!(stdout, "Update #{:?}", self.update_id).unwrap();
         }
         stdout.flush().unwrap();
     }
@@ -598,7 +596,9 @@ fn handle_input(state: Arc<Mutex<State>>, send: std::sync::mpsc::Sender<Event>) 
             Key::Down | Key::Char('j') => {
                 let mut state = state.lock().unwrap();
                 if let Some(pods) = &state.pods {
-                    state.index_highlighted = (pods.len() - 1).min(state.index_highlighted + 1);
+                    if !pods.is_empty() {
+                        state.index_highlighted = (pods.len() - 1).min(state.index_highlighted + 1);
+                    }
                 }
                 send.send(Event::Render)?;
             },
@@ -627,14 +627,12 @@ fn handle_pull(state: Arc<Mutex<State>>, send: std::sync::mpsc::Sender<Event>) -
             }
             send.send(Event::Render)?;
         }
-        std::thread::sleep(std::time::Duration::from_millis(800));
+        std::thread::sleep(std::time::Duration::from_millis(2000));
     }
     Ok(())
 }
 
 fn main() -> Result<()> {
-    // Get and lock the stdios.
-
     let (sender, receiver) = channel();
 
     let state = Arc::new(Mutex::new(State::new()));
@@ -651,6 +649,7 @@ fn main() -> Result<()> {
     });
 
     let mut stdout = io::stdout().into_raw_mode()?;
+    write!(stdout, "{}", clear::All).unwrap();
     for event in receiver {
         match event {
             Event::Quit => {break},
