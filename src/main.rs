@@ -3,7 +3,7 @@
 
 extern crate termion;
 
-use termion::{clear, cursor};
+use termion::{color, clear, cursor};
 use termion::raw::IntoRawMode;
 use termion::input::TermRead;
 use termion::event::Key;
@@ -573,7 +573,11 @@ impl State {
         if let Some(pods) = &self.pods {
             let columns: Vec<Box<dyn Fn(&Pod) -> Option<String>>> = vec![
                 Box::new(|pod| Some(pod.metadata.name.clone())),
-                Box::new(|pod| Some(pod.status.phase.clone())),
+                Box::new(|pod| match pod.status.phase.as_str() {
+                    "Running" => Some(format!("{}Running{}", color::Fg(color::Green), color::Fg(color::Reset))),
+                    "Pending" => Some(format!("{}Pending{}", color::Fg(color::Yellow), color::Fg(color::Reset))),
+                    text      => Some(format!("{}{}{}", color::Fg(color::Red), text, color::Fg(color::Reset))),
+                }),
                 Box::new(|pod| pod.metadata.labels.patched.clone()),
             ];
 
