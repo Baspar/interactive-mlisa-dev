@@ -537,7 +537,7 @@ impl State {
         let res = res.stdout.as_slice();
         let res = std::str::from_utf8(res)?;
         let res: kubectl::Response<kubectl::Labels> = serde_json::from_str(res)?;
-        let pods = res.items
+        let mut pods: Vec<Pod<>> = res.items
             .iter()
             .filter_map(|item| {
                 match &item.metadata.labels {
@@ -555,6 +555,7 @@ impl State {
                 }
             })
             .collect();
+        pods.sort_by_key(|pod| pod.metadata.name.clone());
         self.pods = Some(pods);
         self.update_id += 1;
         Ok(())
@@ -682,6 +683,7 @@ fn main() -> Result<()> {
     });
 
     let mut stdout = io::stdout().into_raw_mode()?;
+    state.lock().unwrap().render(&mut stdout);
     for event in receiver {
         match event {
             Event::Quit => {break},
