@@ -9,14 +9,14 @@ use termion::input::TermRead;
 use termion::event::Key;
 
 // use std::env;
-use std::io::{self,Stdout,Write};
+use std::io::{self,Write};
 use std::process;
 
 mod kubectl;
 
 use anyhow::Result;
 
-use std::sync::{RwLock,Arc,Mutex};
+use std::sync::{Arc,Mutex};
 use std::sync::mpsc::channel;
 
 type Pod = kubectl::Pod<kubectl::PodLabels>;
@@ -180,7 +180,6 @@ fn handle_pull(state: Arc<Mutex<State>>, send: std::sync::mpsc::Sender<Event>) -
         }
         std::thread::sleep(std::time::Duration::from_millis(2000));
     }
-    Ok(())
 }
 
 fn main() -> Result<()> {
