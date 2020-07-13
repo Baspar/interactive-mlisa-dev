@@ -39,39 +39,10 @@ impl State {
         }
     }
 
-    pub fn get_pods(self: &mut Self) -> Result<()> {
-        let res = process::Command::new("kubectl")
-            .env("KUBECONFIG", "/Users/baspar/.kube/config-multipass")
-            .arg("get").arg("pods")
-            .arg("-n").arg("mlisa-core")
-            .arg("-o").arg("json")
-            .output()?;
-
-        let res = res.stdout.as_slice();
-        let res = std::str::from_utf8(res)?;
-        let res: kubectl::Response<kubectl::Labels> = serde_json::from_str(res)?;
-        let mut pods: Vec<Pod<>> = res.items
-            .iter()
-            .filter_map(|item| {
-                match &item.metadata.labels {
-                    kubectl::Labels::PodLabels (labels)  => {
-                        Some(kubectl::Pod {
-                            status: item.status.clone(),
-                            spec: item.spec.clone(),
-                            metadata: kubectl::MetaData {
-                                labels: labels.clone(),
-                                name: item.metadata.name.clone()
-                            }
-                        })
-                    },
-                    kubectl::Labels::OtherLabels {} => None
-                }
-            })
-            .collect();
+    pub fn set_pods(self: &mut Self, mut pods: Pods<>) {
         pods.sort_by_key(|pod| pod.metadata.name.clone());
         self.pods = Some(pods);
         self.update_id += 1;
-        Ok(())
     }
 
     pub fn render(self: &mut Self, stdout: &mut termion::raw::RawTerminal<std::io::Stdout>) {
@@ -170,11 +141,46 @@ fn handle_input(state: Arc<Mutex<State>>, send: std::sync::mpsc::Sender<Event>) 
     Ok(())
 }
 
+fn get_pods () -> Result<Pods<>> {
+    let res = process::Command::new("kubectl")
+        .env("KUBECONFIG", "/Users/baspar/.kube/config-multipass")
+        .arg("get").arg("pods")
+        .arg("-n").arg("mlisa-core")
+        .arg("-o").arg("json")
+        .output()?;
+
+    let res = res.stdout.as_slice();
+    let res = std::str::from_utf8(res)?;
+    let res: kubectl::Response<kubectl::Labels> = serde_json::from_str(res)?;
+    let mut pods: Vec<Pod<>> = res.items
+        .iter()
+        .filter_map(|item| {
+            match &item.metadata.labels {
+                kubectl::Labels::PodLabels (labels)  => {
+                    Some(kubectl::Pod {
+                        status: item.status.clone(),
+                        spec: item.spec.clone(),
+                        metadata: kubectl::MetaData {
+                            labels: labels.clone(),
+                            name: item.metadata.name.clone()
+                        }
+                    })
+                },
+                kubectl::Labels::OtherLabels {} => None
+            }
+        })
+        .collect();
+
+    Ok(pods)
+}
+
 fn handle_pull(state: Arc<Mutex<State>>, send: std::sync::mpsc::Sender<Event>) -> Result<()> {
     loop {
+        let res = get_pods();
         if let Ok(mut state) = state.lock() {
-            if let Err(error) = state.get_pods() {
-                state.error = Some(error);
+            match res {
+                Err(error) => state.error = Some(error),
+                Ok(pods) => state.set_pods(pods)
             }
             send.send(Event::Render)?;
         }
@@ -211,4 +217,3 @@ fn main() -> Result<()> {
 
     Ok(())
 }
-
