@@ -79,7 +79,7 @@ impl State {
                         .len() as u16
                     )
                     .max()
-                    .unwrap()
+                    .unwrap_or_else(|| 0)
                 )
                 .collect();
 
@@ -113,8 +113,8 @@ fn handle_input(state: Arc<Mutex<State>>, send: std::sync::mpsc::Sender<Event>) 
     let stdin = io::stdin();
     let stdin = stdin.lock();
     let mut keys = stdin.keys();
-    loop {
-        match keys.next().unwrap().unwrap() {
+    while let Ok(key) = keys.next().unwrap() {
+        match key {
             Key::Down | Key::Char('j') => {
                 let mut state = state.lock().unwrap();
                 if let Some(pods) = &state.pods {
@@ -152,7 +152,7 @@ fn get_pods () -> Result<Pods<>> {
     let res = res.stdout.as_slice();
     let res = std::str::from_utf8(res)?;
     let res: kubectl::Response<kubectl::Labels> = serde_json::from_str(res)?;
-    let mut pods: Vec<Pod<>> = res.items
+    let pods: Vec<Pod<>> = res.items
         .iter()
         .filter_map(|item| {
             match &item.metadata.labels {
